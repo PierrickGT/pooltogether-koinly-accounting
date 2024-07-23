@@ -1,0 +1,14 @@
+/target
+Cargo.lock
+
+# Logs
+output.log
+
+% GDrive credentials
+credentials
+
+# env
+.env
+
+# MacOS
+.DS_Store
