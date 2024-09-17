@@ -1,5 +1,5 @@
 use crate::{
-    config::{Config, GoogleDriveConfig},
+    config::Config,
     constants::{
         get_asset_decimals, get_asset_symbol, get_underlying_asset_address, POOL_OPTIMISM_ADDRESS,
     },
@@ -20,31 +20,31 @@ use alloy::{
         Transport,
     },
 };
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
 use colored::Colorize;
-use google_drive::{types::File, Client as GoogleDriveClient};
 use op_alloy_rpc_types::OptimismTransactionReceiptFields;
-use sheets::{
-    spreadsheets::Spreadsheets,
-    types::{
-        DateTimeRenderOption, Dimension, InsertDataOption, ValueInputOption, ValueRange,
-        ValueRenderOption,
-    },
-    Client as GoogleSheetsClient,
-};
+use serde::Serialize;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct KoinlyData {
-    pub date: DateTime<Utc>,
-    pub amount_in: String,
-    pub amount_in_symbol: String,
-    pub amount_out: String,
-    pub amount_out_symbol: String,
-    pub fee: String,
-    pub fee_symbol: String,
-    pub tx_hash: String,
+    #[serde(rename = "Date")]
+    date: String,
+    #[serde(rename = "Sent Amount")]
+    amount_in: String,
+    #[serde(rename = "Sent Currency")]
+    amount_in_symbol: String,
+    #[serde(rename = "Received Amount")]
+    amount_out: String,
+    #[serde(rename = "Received Currency")]
+    amount_out_symbol: String,
+    #[serde(rename = "Fee Amount")]
+    fee: String,
+    #[serde(rename = "Fee Currency")]
+    fee_symbol: String,
+    #[serde(rename = "TxHash")]
+    tx_hash: String,
 }
 
 sol! {
@@ -59,29 +59,27 @@ type Filler = FillProvider<
 >;
 
 #[derive(Clone)]
-pub struct Bot<F, T, P> {
+pub struct Bot<F, T, P, W> {
     /// Provider
     provider: Arc<P>,
     /// Chain ID
     chain_id: U64,
     /// Address of the sender for which to record liquidation transactions
     sender: Address,
-    /// Google Drive config
-    google_drive_config: GoogleDriveConfig,
-    phantom: PhantomData<(F, T)>,
+    phantom: PhantomData<(F, T, W)>,
 }
 
-impl<T, P> Bot<Filler, T, P>
+impl<T, P, W> Bot<Filler, T, P, W>
 where
     T: Transport + Clone,
     P: Provider<T, AnyNetwork> + Clone,
+    W: std::io::Write,
 {
     pub fn new(provider: Arc<P>, config: Config) -> Self {
         Self {
             provider: provider.clone(),
             chain_id: config.chain_id,
             sender: config.sender,
-            google_drive_config: config.google_drive,
             phantom: PhantomData,
         }
     }
@@ -127,7 +125,7 @@ where
                 get_underlying_asset_address(self.chain_id, event.liquidationPair);
 
             event_data = Some(KoinlyData {
-                date: date_utc,
+                date: date_utc.to_string(),
                 amount_in: format_units(
                     event.amountIn,
                     get_asset_decimals(self.chain_id, *POOL_OPTIMISM_ADDRESS),
@@ -156,155 +154,19 @@ where
         event_data
     }
 
-    /// Write liquidation data in the Koinly CSV fromat to a Google Sheets spreadsheet
-    pub async fn write_to_koinly_csv(&self, data: KoinlyData) {
-        let google_drive = GoogleDriveClient::new(
-            self.google_drive_config.client_id.clone(),
-            self.google_drive_config.client_secret.clone(),
-            self.google_drive_config.redirect_uri.clone(),
-            self.google_drive_config.token.clone(),
-            self.google_drive_config.refresh_token.clone(),
-        );
+    /// Write liquidation data into the CSV file
+    pub async fn write_to_koinly_csv(&self, wtr: &mut csv::Writer<W>, data: KoinlyData) {
+        let _ = wtr.serialize(KoinlyData {
+            date: data.date.to_string(),
+            amount_in: data.amount_in,
+            amount_in_symbol: data.amount_in_symbol,
+            amount_out: data.amount_out,
+            amount_out_symbol: data.amount_out_symbol,
+            fee: data.fee,
+            fee_symbol: data.fee_symbol,
+            tx_hash: data.tx_hash,
+        });
 
-        let google_sheets = GoogleSheetsClient::new(
-            self.google_drive_config.client_id.clone(),
-            self.google_drive_config.client_secret.clone(),
-            self.google_drive_config.redirect_uri.clone(),
-            self.google_drive_config.token.clone(),
-            self.google_drive_config.refresh_token.clone(),
-        );
-
-        let _ = google_drive.refresh_access_token().await;
-        let _ = google_sheets.refresh_access_token().await;
-
-        let spreadsheets = Spreadsheets::new(google_sheets);
-
-        let mime_type = "application/vnd.google-apps.spreadsheet".to_string();
-        let parent_folder_id = self.google_drive_config.folder_id.clone();
-
-        let query = format!(
-            "mimeType = '{}' and '{}' in parents",
-            mime_type, self.google_drive_config.folder_id
-        );
-
-        let files = google_drive
-            .files()
-            .list(
-                "user", "", false, "", false, "", 0, "", &query, "", false, false, "",
-            )
-            .await
-            .unwrap()
-            .body;
-
-        let filename = data.date.format("%Y-%m").to_string();
-        let range = String::from("Sheet1!A1:H1");
-
-        for file in files {
-            // If file exists, write Koinly data to it.
-            if file.name == filename {
-                let _ = spreadsheets
-                    .values_append(
-                        &file.id.to_string(),
-                        &range.to_string(),
-                        false,
-                        InsertDataOption::InsertRows,
-                        DateTimeRenderOption::SerialNumber,
-                        ValueRenderOption::FormattedValue,
-                        ValueInputOption::Raw,
-                        &ValueRange {
-                            major_dimension: Some(Dimension::Rows),
-                            range,
-                            values: vec![vec![
-                                data.date.to_string(),
-                                data.amount_in,
-                                data.amount_in_symbol,
-                                data.amount_out,
-                                data.amount_out_symbol,
-                                data.fee,
-                                data.fee_symbol,
-                                data.tx_hash,
-                            ]],
-                        },
-                    )
-                    .await;
-
-                log_info_cyan!("Updated spreadsheet {} with liquidation data!", filename);
-
-                return;
-            }
-        }
-
-        // If file doesn't exist, create it and write Koinly data to it.
-        let new_file = File {
-            created_time: Some(Utc::now()),
-            name: filename,
-            mime_type,
-            parents: vec![parent_folder_id],
-            ..Default::default()
-        };
-
-        let created_file = google_drive
-            .files()
-            .create(false, "", false, "", false, false, false, &new_file)
-            .await
-            .unwrap();
-
-        log_info_cyan!("Create new spreadsheet: {:?}", created_file.body.name);
-
-        let new_spreadsheet_id = &created_file.body.id.to_string();
-
-        let _ = spreadsheets
-            .values_append(
-                new_spreadsheet_id,
-                &range.to_string(),
-                false,
-                InsertDataOption::InsertRows,
-                DateTimeRenderOption::SerialNumber,
-                ValueRenderOption::FormattedValue,
-                ValueInputOption::Raw,
-                &ValueRange {
-                    major_dimension: Some(Dimension::Rows),
-                    range: range.clone(),
-                    values: vec![vec![
-                        String::from("Date"),
-                        String::from("Sent Amount"),
-                        String::from("Sent Currency"),
-                        String::from("Received Amount"),
-                        String::from("Received Currency"),
-                        String::from("Fee Amount"),
-                        String::from("Fee Currency"),
-                        String::from("TxHash"),
-                    ]],
-                },
-            )
-            .await;
-
-        let _ = spreadsheets
-            .values_append(
-                new_spreadsheet_id,
-                &range.to_string(),
-                false,
-                InsertDataOption::InsertRows,
-                DateTimeRenderOption::SerialNumber,
-                ValueRenderOption::FormattedValue,
-                ValueInputOption::Raw,
-                &ValueRange {
-                    major_dimension: Some(Dimension::Rows),
-                    range,
-                    values: vec![vec![
-                        data.date.to_string(),
-                        data.amount_in,
-                        data.amount_in_symbol,
-                        data.amount_out,
-                        data.amount_out_symbol,
-                        data.fee,
-                        data.fee_symbol,
-                        data.tx_hash,
-                    ]],
-                },
-            )
-            .await;
-
-        log_info_cyan!("Inserted liquidation data into new spreadsheet!");
+        log_info_cyan!("Inserted liquidation data into CSV!");
     }
 }

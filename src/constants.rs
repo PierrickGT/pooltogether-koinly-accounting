@@ -66,7 +66,7 @@ pub static PUSDCE_LIQUIDATION_PAIR_ADDRESS: Lazy<Address> = Lazy::new(|| {
 });
 
 pub static PWETH_LIQUIDATION_PAIR_ADDRESS: Lazy<Address> = Lazy::new(|| {
-    "0xde5deFa124faAA6d85E98E56b36616d249e543Ca"
+    "0x22C33b869Afda26514B8d18132e1548Da200a592"
         .parse()
         .unwrap()
 });
