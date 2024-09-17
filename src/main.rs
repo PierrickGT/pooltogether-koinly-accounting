@@ -12,6 +12,7 @@ use alloy::{
     rpc::types::{BlockNumberOrTag, Filter},
 };
 use alloy_chains::Chain;
+use chrono::DateTime;
 use colored::Colorize;
 use eyre::Result;
 use foundry_block_explorers::Client;
@@ -59,6 +60,21 @@ async fn main() -> Result<()> {
     let progress_bar =
         multi_progress.add(ProgressBar::new(((to_block - from_block) / increment) + 2));
 
+    let date = DateTime::from_timestamp(config.start_timestamp as i64, 0).unwrap();
+    let filename = date.format("./results/%Y-%m.csv").to_string();
+
+    log_info_cyan!("Creating or overwriting CSV file: {}", filename);
+
+    // Opens the file in write mode and creates it if it doesn't exist.
+    // If the file already exists, it will be overwritten.
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(filename)?;
+
+    let mut wtr = csv::Writer::from_writer(file);
+
     // Loop through the blocks in the range by increment.
     for from_block_number in (from_block..=to_block).step_by(increment as usize) {
         let to_block_number = std::cmp::min(from_block_number + increment, to_block);
@@ -75,13 +91,15 @@ async fn main() -> Result<()> {
 
         for log in logs {
             if let Some(koinly_data) = bot.decode_liquidation_router_event(log).await {
-                bot.write_to_koinly_csv(koinly_data).await;
+                bot.write_to_koinly_csv(&mut wtr, koinly_data).await;
             }
         }
 
         // Increment the progress bar after each iteration.
         progress_bar.inc(1);
     }
+
+    wtr.flush()?;
 
     log_info_cyan!("Transactions processed!");
 
