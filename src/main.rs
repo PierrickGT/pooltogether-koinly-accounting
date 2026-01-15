@@ -11,21 +11,42 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     rpc::types::{BlockNumberOrTag, Filter},
 };
-use alloy_chains::Chain;
 use chrono::DateTime;
 use colored::Colorize;
 use eyre::Result;
-use foundry_block_explorers::Client;
+use reqwest::redirect::Policy;
 use indicatif::{MultiProgress, ProgressBar};
+use serde::Deserialize;
 use std::sync::Arc;
-use tokio_retry::Retry;
-use tokio_retry::strategy::FixedInterval;
 use std::time::Duration;
+use tokio_retry::strategy::FixedInterval;
+use tokio_retry::Retry;
+
+#[derive(Debug, Deserialize)]
+struct BlockscoutBlockResponse {
+    #[serde(rename = "blockNumber")]
+    block_number: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BlockscoutResponse<T> {
+    result: T,
+}
+
+async fn get_block_by_timestamp(client: &reqwest::Client, api_key: &str, timestamp: u64) -> Result<u64> {
+    let url = format!(
+        "https://optimism.blockscout.com/api?module=block&action=getblocknobytime&timestamp={}&closest=before&apikey={}",
+        timestamp, api_key
+    );
+    let resp: BlockscoutResponse<BlockscoutBlockResponse> = client.get(&url).send().await?.json().await?;
+    Ok(resp.result.block_number.parse()?)
+}
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 8)]
 async fn main() -> Result<()> {
     let config = Config::read_from_dotenv().await?;
-    let etherscan = Client::new_from_env(Chain::from_id(config.chain_id.try_into().unwrap()))?;
+    let blockscout_api_key = std::env::var("BLOCKSCOUT_API_KEY")?;
+    let http_client = reqwest::Client::builder().redirect(Policy::limited(10)).build()?;
 
     let provider = Arc::new(
         ProviderBuilder::new()
@@ -36,23 +57,8 @@ async fn main() -> Result<()> {
 
     let bot = Bot::new(provider.clone(), config.clone());
 
-    let from_block = etherscan
-        .get_block_by_timestamp(config.start_timestamp, "before")
-        .await?
-        .block_number
-        .as_number()
-        .unwrap()
-        .try_into()
-        .unwrap();
-
-    let to_block = etherscan
-        .get_block_by_timestamp(config.end_timestamp, "before")
-        .await?
-        .block_number
-        .as_number()
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let from_block = get_block_by_timestamp(&http_client, &blockscout_api_key, config.start_timestamp).await?;
+    let to_block = get_block_by_timestamp(&http_client, &blockscout_api_key, config.end_timestamp).await?;
 
     let multi_progress = MultiProgress::new();
 
@@ -107,7 +113,9 @@ async fn main() -> Result<()> {
                         }
                     }
                 },
-            ).await.unwrap();
+            )
+            .await
+            .unwrap();
 
             for log in logs {
                 if let Some(koinly_data) = bot.decode_liquidation_router_event(log).await {

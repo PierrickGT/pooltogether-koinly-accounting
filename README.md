@@ -20,7 +20,7 @@ The following environment variables are required:
 - `SENDER_ADDRESS`: the address of the sender for which to record liquidation transactions.
 - `START_TIMESTAMP`: the start timestamp in seconds at which to start querying blocks.
 - `END_TIMESTAMP`: the end timestamp in seconds at which to stop querying blocks.
-- `ETHERSCAN_API_KEY`: the Etherscan API key for the network to query. Used for fetching the block number at a given timestamp. For Optimism, you need to retrieve the API key at the following URL: [https://optimistic.etherscan.io/myapikey](https://optimistic.etherscan.io/myapikey)
+- `BLOCKSCOUT_API_KEY`: the Blockscout API key for the network to query. Used for fetching the block number at a given timestamp.
 
 ### Running
 
